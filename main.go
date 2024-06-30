@@ -5,11 +5,12 @@ import (
 	"encoding/json"
 	"fmt"
 	"github.com/golang-jwt/jwt/v4"
-	_ "github.com/golang-jwt/jwt/v4"
+	_ "github.com/lib/pq"
 	"golang.org/x/crypto/bcrypt"
 	"io"
 	"log"
 	"net/http"
+	"strings"
 	"time"
 )
 
@@ -33,9 +34,9 @@ var db *sql.DB
 const (
 	host     = "localhost"
 	port     = 5432
-	user     = "your_username"
-	password = "your_password"
-	dbname   = "your_database_name"
+	user     = "postgres"
+	password = "123"
+	dbname   = "catfacts"
 )
 
 func initDB() {
@@ -79,6 +80,7 @@ func generateJWT(username string) (string, error) {
 }
 
 func verifyJWT(tokenString string) (*jwt.RegisteredClaims, error) {
+	tokenString = strings.TrimPrefix(tokenString, "Bearer ")
 	claims := &jwt.RegisteredClaims{}
 	token, err := jwt.ParseWithClaims(tokenString, claims, func(token *jwt.Token) (interface{}, error) {
 		return jwtKey, nil
@@ -144,7 +146,7 @@ func login(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(map[string]string{"token": tokenString})
 }
-func getFact(w http.ResponseWriter) {
+func getFact(w http.ResponseWriter, r *http.Request) {
 	url := "https://meowfacts.herokuapp.com/"
 	resp, err := http.Get(url)
 	if err != nil {
@@ -182,8 +184,13 @@ func saveFavoriteFact(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "Invalid request payload", http.StatusBadRequest)
 		return
 	}
-
-	_, err = db.Exec("INSERT INTO favorites (user_id, fact) VALUES ($1, $2)", claims.Subject, favoriteFact.Fact)
+	var userID int
+	err = db.QueryRow("SELECT id FROM users WHERE username = $1", claims.Subject).Scan(&userID)
+	if err != nil {
+		http.Error(w, "Failed to find user ID", http.StatusInternalServerError)
+		return
+	}
+	_, err = db.Exec("INSERT INTO favorites (user_id, fact) VALUES ($1, $2)", userID, favoriteFact.Fact)
 	if err != nil {
 		http.Error(w, "Failed to save favorite fact", http.StatusInternalServerError)
 		return
@@ -204,7 +211,13 @@ func getFavoriteFacts(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "Invalid token", http.StatusUnauthorized)
 		return
 	}
-	rows, err := db.Query("SELECT id, user_id, fact FROM favorites WHERE user_id = $1", claims.Subject)
+	var userID int
+	err = db.QueryRow("SELECT id FROM users WHERE username = $1", claims.Subject).Scan(&userID)
+	if err != nil {
+		http.Error(w, "Failed to find user ID", http.StatusInternalServerError)
+		return
+	}
+	rows, err := db.Query("SELECT id, user_id, fact FROM favorites WHERE user_id = $1", userID)
 	if err != nil {
 		http.Error(w, "Failed to retrieve favorite facts", http.StatusInternalServerError)
 		return
@@ -229,6 +242,7 @@ func main() {
 	defer closeDB()
 	http.HandleFunc("/register", register)
 	http.HandleFunc("/login", login)
+	http.HandleFunc("/getFact", getFact)
 	http.HandleFunc("/saveFavoriteFact", saveFavoriteFact)
 	http.HandleFunc("/getFavoriteFacts", getFavoriteFacts)
 	log.Fatal(http.ListenAndServe(":8080", nil))
